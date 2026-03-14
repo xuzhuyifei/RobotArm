@@ -33,8 +33,8 @@ class RobotArm:
     def send(self, cmd):
         if not (self.ser and self.ser.is_open):
             raise RuntimeError("串口未连接")
-        self.ser.write((cmd + "\n").encode())
-        print("发送:", cmd)
+            self.ser.write((cmd + "\n").encode())
+            print("发送:", cmd)
 
     def joint(self,a1,a2,a3,s):
         self.send(f"JointAngle_{a1},{a2},{a3},{s},")
@@ -91,8 +91,8 @@ class RobotGUI:
         self._io_thread.start()
 
         self.root.title("机械臂控制系统")
-        self.root.geometry("900x620")
-        self.root.minsize(900, 620)
+        self.root.geometry("1100x640")
+        self.root.minsize(1000, 600)
 
         self._configure_style()
         self._build_layout()
@@ -236,17 +236,20 @@ class RobotGUI:
     def _build_layout(self):
         outer = ttk.Frame(self.root, style="App.TFrame", padding=12)
         outer.pack(fill="both", expand=True)
-
-        outer.columnconfigure(0, weight=3)
-        outer.columnconfigure(1, weight=2)
         outer.rowconfigure(0, weight=1)
         outer.rowconfigure(1, weight=0)
+        outer.columnconfigure(0, weight=1)
+
+        # 主区域：PanedWindow 可拖动调整宽度
+        paned = ttk.PanedWindow(outer, orient="horizontal")
+        paned.grid(row=0, column=0, sticky="nsew")
+        paned.columnconfigure(0, weight=1)
 
         # 左侧：控制区（标签页）
-        left = ttk.Frame(outer, style="App.TFrame")
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left = ttk.Frame(paned, style="App.TFrame")
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
+        paned.add(left, weight=3)
 
         self.nb = ttk.Notebook(left)
         self.nb.grid(row=0, column=0, sticky="nsew")
@@ -269,16 +272,20 @@ class RobotGUI:
         self._build_program_tab(self.tab_program)
         self._build_system_tab(self.tab_system)
 
-        # 右侧：日志与状态
-        right = ttk.Labelframe(outer, text="运行日志", style="Card.TLabelframe", padding=10)
-        right.grid(row=0, column=1, sticky="nsew")
+        # 中间：步骤缓冲区（始终显示）
+        frm_buf = self._build_step_buffer_panel(paned)
+        paned.add(frm_buf, weight=2)
+
+        # 右侧：运行日志（宽度略大，可拖动调整）
+        right = ttk.Labelframe(paned, text="运行日志", style="Card.TLabelframe", padding=10)
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
+        paned.add(right, weight=3)
 
         self.status_badge = ttk.Label(right, text="未连接", style="Hint.TLabel")
         self.status_badge.grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        self.log = ScrolledText(right, height=10, wrap="word", font=("Consolas", 10))
+        self.log = ScrolledText(right, height=12, wrap="word", font=("Consolas", 10))
         self.log.grid(row=1, column=0, sticky="nsew")
         self.log.configure(state="disabled")
 
@@ -290,7 +297,7 @@ class RobotGUI:
 
         # 底部状态栏
         self.footer = ttk.Frame(outer, style="App.TFrame")
-        self.footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.footer.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         self.footer.columnconfigure(0, weight=1)
         self.footer_text = tk.StringVar(value="就绪")
         ttk.Label(self.footer, textvariable=self.footer_text, style="Hint.TLabel").grid(row=0, column=0, sticky="w")
@@ -616,18 +623,14 @@ class RobotGUI:
 
         self._control_widgets += [b1, b2, b3]
 
-    def _build_program_tab(self, parent: ttk.Frame):
-        parent.columnconfigure(0, weight=1)
-        parent.rowconfigure(0, weight=1)
-
-        # 步骤缓冲区显示
+    def _build_step_buffer_panel(self, parent: ttk.Widget) -> ttk.Frame:
+        """步骤缓冲区面板，始终显示在右侧，独立于程序标签"""
         frm_buf = ttk.Labelframe(parent, text="步骤缓冲区", style="Card.TLabelframe", padding=10)
-        frm_buf.grid(row=0, column=0, sticky="nsew")
         frm_buf.columnconfigure(0, weight=1)
         frm_buf.rowconfigure(0, weight=1)
 
         columns = ("step", "desc")
-        self.step_tree = ttk.Treeview(frm_buf, columns=columns, show="headings", height=6)
+        self.step_tree = ttk.Treeview(frm_buf, columns=columns, show="headings", height=8)
         self.step_tree.heading("step", text="步骤")
         self.step_tree.heading("desc", text="指令")
         self.step_tree.column("step", width=60, anchor="center")
@@ -653,10 +656,14 @@ class RobotGUI:
         btn_clear.grid(row=0, column=3, sticky="ew", padx=4)
 
         self._control_widgets += [self.record_btn, btn_delete, btn_insert, btn_clear]
+        return frm_buf
+
+    def _build_program_tab(self, parent: ttk.Frame):
+        parent.columnconfigure(0, weight=1)
 
         # 配方管理
         frm_top = ttk.Labelframe(parent, text="配方管理", style="Card.TLabelframe", padding=10)
-        frm_top.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        frm_top.grid(row=0, column=0, sticky="ew")
         frm_top.columnconfigure((1, 2, 3), weight=1)
 
         ttk.Label(frm_top, text="配方号").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
