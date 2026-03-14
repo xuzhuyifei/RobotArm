@@ -250,16 +250,19 @@ class RobotGUI:
         self.tab_conn = ttk.Frame(self.nb, padding=10)
         self.tab_motion = ttk.Frame(self.nb, padding=10)
         self.tab_tool = ttk.Frame(self.nb, padding=10)
+        self.tab_program = ttk.Frame(self.nb, padding=10)
         self.tab_system = ttk.Frame(self.nb, padding=10)
 
         self.nb.add(self.tab_conn, text="连接")
         self.nb.add(self.tab_motion, text="运动")
         self.nb.add(self.tab_tool, text="末端")
+        self.nb.add(self.tab_program, text="程序")
         self.nb.add(self.tab_system, text="系统")
 
         self._build_serial_tab(self.tab_conn)
         self._build_motion_tab(self.tab_motion)
         self._build_tool_tab(self.tab_tool)
+        self._build_program_tab(self.tab_program)
         self._build_system_tab(self.tab_system)
 
         # 右侧：日志与状态
@@ -555,10 +558,144 @@ class RobotGUI:
 
         self._control_widgets += [b1, b2, b3]
 
+    def _build_program_tab(self, parent: ttk.Frame):
+        parent.columnconfigure(0, weight=1)
+
+        frm_top = ttk.Labelframe(parent, text="配方管理", style="Card.TLabelframe", padding=10)
+        frm_top.grid(row=0, column=0, sticky="ew")
+        frm_top.columnconfigure((1, 2, 3), weight=1)
+
+        ttk.Label(frm_top, text="配方号").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        self.recipe_var = tk.StringVar(value="1")
+        self.recipe_box = ttk.Combobox(frm_top, textvariable=self.recipe_var, width=8, state="readonly",
+                                       values=("1", "2", "3"))
+        self.recipe_box.grid(row=0, column=1, sticky="w", pady=4)
+
+        btn_set_ok = ttk.Button(frm_top, text="写入配方 (SetStepOK)",
+                                command=self._do_set_step_ok)
+        btn_clean = ttk.Button(frm_top, text="清除配方 (Clean)",
+                               command=self._do_clean_recipe)
+        btn_edit = ttk.Button(frm_top, text="编辑配方 (Editor)",
+                              command=self._do_edit_recipe)
+        btn_set_ok.grid(row=1, column=0, sticky="ew", padx=4, pady=4, columnspan=1)
+        btn_clean.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        btn_edit.grid(row=1, column=2, sticky="ew", padx=4, pady=4)
+
+        self._control_widgets += [btn_set_ok, btn_clean, btn_edit]
+
+        frm_run = ttk.Labelframe(parent, text="运行控制", style="Card.TLabelframe", padding=10)
+        frm_run.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        frm_run.columnconfigure((1, 2), weight=1)
+
+        ttk.Label(frm_run, text="运行配方").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        self.run_recipe_var = tk.StringVar(value="1")
+        self.run_recipe_box = ttk.Combobox(frm_run, textvariable=self.run_recipe_var, width=8, state="readonly",
+                                           values=("1", "2", "3"))
+        self.run_recipe_box.grid(row=0, column=1, sticky="w", pady=4)
+
+        btn_single = ttk.Button(frm_run, text="单循环 (Single)",
+                                command=self._do_single_run)
+        btn_cycle = ttk.Button(frm_run, text="循环运行 (Cycle)",
+                               command=self._do_cycle_run)
+        btn_refer = ttk.Button(frm_run, text="查询配方 (Refer)",
+                               command=self._do_refer)
+        btn_single.grid(row=1, column=0, sticky="ew", padx=4, pady=4)
+        btn_cycle.grid(row=1, column=1, sticky="ew", padx=4, pady=4)
+        btn_refer.grid(row=1, column=2, sticky="ew", padx=4, pady=4)
+
+        self._control_widgets += [btn_single, btn_cycle, btn_refer]
+
+        frm_adv = ttk.Labelframe(parent, text="高级设置", style="Card.TLabelframe", padding=10)
+        frm_adv.grid(row=2, column=0, sticky="ew", pady=(10, 0))
+        frm_adv.columnconfigure((1, 3), weight=1)
+
+        ttk.Label(frm_adv, text="自动校准次数 Align").grid(row=0, column=0, sticky="w", padx=(0, 6), pady=4)
+        self.align_entry = ttk.Entry(frm_adv, width=8, validate="key", validatecommand=self._only_float_vcmd)
+        self.align_entry.insert(0, "0")
+        self.align_entry.grid(row=0, column=1, sticky="w", pady=4)
+
+        btn_align = ttk.Button(frm_adv, text="设置自动校准", command=self._do_align)
+        btn_trigger = ttk.Button(frm_adv, text="DI触发循环 (Trigger)", command=self._do_trigger)
+        btn_align.grid(row=0, column=2, sticky="ew", padx=4, pady=4)
+        btn_trigger.grid(row=0, column=3, sticky="ew", padx=4, pady=4)
+
+        self._control_widgets += [btn_align, btn_trigger]
+
     def _send_simple(self, cmd: str):
         if not self._require_connected():
             return
         self._append_log(f"发送：{cmd}")
+        self._io_q.put(("send", cmd))
+
+    # ===== 程序配方相关指令 =====
+    def _get_recipe(self, var: tk.StringVar) -> str:
+        v = var.get().strip()
+        if v not in {"1", "2", "3"}:
+            v = "1"
+        return v
+
+    def _do_set_step_ok(self):
+        if not self._require_connected():
+            return
+        recipe = self._get_recipe(self.recipe_var)
+        cmd = f"SetStepOK_{recipe},"
+        self._append_log(f"发送：{cmd}  (写入步骤到配方 {recipe})")
+        self._io_q.put(("send", cmd))
+
+    def _do_clean_recipe(self):
+        if not self._require_connected():
+            return
+        recipe = self._get_recipe(self.recipe_var)
+        cmd = f"Clean_{recipe},"
+        self._append_log(f"发送：{cmd}  (清除配方 {recipe})")
+        self._io_q.put(("send", cmd))
+
+    def _do_edit_recipe(self):
+        if not self._require_connected():
+            return
+        recipe = self._get_recipe(self.recipe_var)
+        cmd = f"Editor_{recipe},"
+        self._append_log(f"发送：{cmd}  (编辑配方 {recipe})")
+        self._io_q.put(("send", cmd))
+
+    def _do_single_run(self):
+        if not self._require_connected():
+            return
+        recipe = self._get_recipe(self.run_recipe_var)
+        cmd = f"Single_{recipe},"
+        self._append_log(f"发送：{cmd}  (单循环运行配方 {recipe})")
+        self._io_q.put(("send", cmd))
+
+    def _do_cycle_run(self):
+        if not self._require_connected():
+            return
+        recipe = self._get_recipe(self.run_recipe_var)
+        cmd = f"Cycle_{recipe},"
+        self._append_log(f"发送：{cmd}  (循环运行配方 {recipe})")
+        self._io_q.put(("send", cmd))
+
+    def _do_refer(self):
+        if not self._require_connected():
+            return
+        cmd = "Refer"
+        self._append_log("发送：Refer  (查询当前配方程序)")
+        self._io_q.put(("send", cmd))
+
+    def _do_align(self):
+        if not self._require_connected():
+            return
+        v = self.align_entry.get().strip()
+        if v == "":
+            v = "0"
+        cmd = f"Align_{v},"
+        self._append_log(f"发送：{cmd}  (设置自动校准次数)")
+        self._io_q.put(("send", cmd))
+
+    def _do_trigger(self):
+        if not self._require_connected():
+            return
+        cmd = "Trigger"
+        self._append_log("发送：Trigger  (DI 触发配方循环)")
         self._io_q.put(("send", cmd))
 
 
