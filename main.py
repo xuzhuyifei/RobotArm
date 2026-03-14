@@ -33,8 +33,8 @@ class RobotArm:
     def send(self, cmd):
         if not (self.ser and self.ser.is_open):
             raise RuntimeError("串口未连接")
-        self.ser.write((cmd + "\n").encode())
-        print("发送:", cmd)
+            self.ser.write((cmd + "\n").encode())
+            print("发送:", cmd)
 
     def joint(self,a1,a2,a3,s):
         self.send(f"JointAngle_{a1},{a2},{a3},{s},")
@@ -81,14 +81,18 @@ class RobotGUI:
         self.robot = RobotArm()
         self._pending_connect = False
 
+        # 步骤缓冲区（本地镜像）
+        self.recording_steps = False
+        self.step_records = []  # 每个元素：{"index": int, "type": int, "desc": str, "cmd": str}
+
         self._io_q: queue.Queue = queue.Queue()
         self._ui_q: queue.Queue = queue.Queue()
         self._io_thread = threading.Thread(target=self._io_loop, name="serial-io", daemon=True)
         self._io_thread.start()
 
         self.root.title("机械臂控制系统")
-        self.root.geometry("900x620")
-        self.root.minsize(900, 620)
+        self.root.geometry("1100x640")
+        self.root.minsize(1000, 600)
 
         self._configure_style()
         self._build_layout()
@@ -232,17 +236,20 @@ class RobotGUI:
     def _build_layout(self):
         outer = ttk.Frame(self.root, style="App.TFrame", padding=12)
         outer.pack(fill="both", expand=True)
-
-        outer.columnconfigure(0, weight=3)
-        outer.columnconfigure(1, weight=2)
         outer.rowconfigure(0, weight=1)
         outer.rowconfigure(1, weight=0)
+        outer.columnconfigure(0, weight=1)
+
+        # 主区域：PanedWindow 可拖动调整宽度
+        paned = ttk.PanedWindow(outer, orient="horizontal")
+        paned.grid(row=0, column=0, sticky="nsew")
+        paned.columnconfigure(0, weight=1)
 
         # 左侧：控制区（标签页）
-        left = ttk.Frame(outer, style="App.TFrame")
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left = ttk.Frame(paned, style="App.TFrame")
         left.rowconfigure(0, weight=1)
         left.columnconfigure(0, weight=1)
+        paned.add(left, weight=3)
 
         self.nb = ttk.Notebook(left)
         self.nb.grid(row=0, column=0, sticky="nsew")
@@ -265,16 +272,20 @@ class RobotGUI:
         self._build_program_tab(self.tab_program)
         self._build_system_tab(self.tab_system)
 
-        # 右侧：日志与状态
-        right = ttk.Labelframe(outer, text="运行日志", style="Card.TLabelframe", padding=10)
-        right.grid(row=0, column=1, sticky="nsew")
+        # 中间：步骤缓冲区（始终显示）
+        frm_buf = self._build_step_buffer_panel(paned)
+        paned.add(frm_buf, weight=2)
+
+        # 右侧：运行日志（宽度略大，可拖动调整）
+        right = ttk.Labelframe(paned, text="运行日志", style="Card.TLabelframe", padding=10)
         right.rowconfigure(1, weight=1)
         right.columnconfigure(0, weight=1)
+        paned.add(right, weight=3)
 
         self.status_badge = ttk.Label(right, text="未连接", style="Hint.TLabel")
         self.status_badge.grid(row=0, column=0, sticky="w", pady=(0, 8))
 
-        self.log = ScrolledText(right, height=10, wrap="word", font=("Consolas", 10))
+        self.log = ScrolledText(right, height=12, wrap="word", font=("Consolas", 10))
         self.log.grid(row=1, column=0, sticky="nsew")
         self.log.configure(state="disabled")
 
@@ -286,7 +297,7 @@ class RobotGUI:
 
         # 底部状态栏
         self.footer = ttk.Frame(outer, style="App.TFrame")
-        self.footer.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
+        self.footer.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         self.footer.columnconfigure(0, weight=1)
         self.footer_text = tk.StringVar(value="就绪")
         ttk.Label(self.footer, textvariable=self.footer_text, style="Hint.TLabel").grid(row=0, column=0, sticky="w")
@@ -486,6 +497,15 @@ class RobotGUI:
         cmd = f"JointAngle_{self.j1.get()},{self.j2.get()},{self.j3.get()},{self.js.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=1,
+                p1=self.j1.get(),
+                p2=self.j2.get(),
+                p3=self.j3.get(),
+                speed=self.js.get(),
+                desc=f"关节 {self.j1.get()},{self.j2.get()},{self.j3.get()} v={self.js.get()}",
+            )
 
     def _do_joint_offset(self):
         if not self._require_connected():
@@ -493,6 +513,15 @@ class RobotGUI:
         cmd = f"JointAngleOffset_{self.j1.get()},{self.j2.get()},{self.j3.get()},{self.js.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=2,
+                p1=self.j1.get(),
+                p2=self.j2.get(),
+                p3=self.j3.get(),
+                speed=self.js.get(),
+                desc=f"关节偏移 {self.j1.get()},{self.j2.get()},{self.j3.get()} v={self.js.get()}",
+            )
 
     def _do_world(self):
         if not self._require_connected():
@@ -500,6 +529,15 @@ class RobotGUI:
         cmd = f"DescartesPoint_{self.wx.get()},{self.wy.get()},{self.wz.get()},{self.ws.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=3,
+                p1=self.wx.get(),
+                p2=self.wy.get(),
+                p3=self.wz.get(),
+                speed=self.ws.get(),
+                desc=f"走点 X={self.wx.get()},Y={self.wy.get()},Z={self.wz.get()} v={self.ws.get()}",
+            )
 
     def _do_world_offset(self):
         if not self._require_connected():
@@ -507,6 +545,15 @@ class RobotGUI:
         cmd = f"DescartesPointOffset_{self.wx.get()},{self.wy.get()},{self.wz.get()},{self.ws.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=4,
+                p1=self.wx.get(),
+                p2=self.wy.get(),
+                p3=self.wz.get(),
+                speed=self.ws.get(),
+                desc=f"点偏移 X={self.wx.get()},Y={self.wy.get()},Z={self.wz.get()} v={self.ws.get()}",
+            )
 
     def _do_line(self):
         if not self._require_connected():
@@ -514,6 +561,15 @@ class RobotGUI:
         cmd = f"DescartesLine_{self.lx.get()},{self.ly.get()},{self.lz.get()},{self.ls.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=5,
+                p1=self.lx.get(),
+                p2=self.ly.get(),
+                p3=self.lz.get(),
+                speed=self.ls.get(),
+                desc=f"直线 X={self.lx.get()},Y={self.ly.get()},Z={self.lz.get()} v={self.ls.get()}",
+            )
 
     def _do_line_offset(self):
         if not self._require_connected():
@@ -521,6 +577,15 @@ class RobotGUI:
         cmd = f"DescartesLinearOffset_{self.lx.get()},{self.ly.get()},{self.lz.get()},{self.ls.get()},"
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+        if self.recording_steps:
+            self._record_step(
+                type_code=6,
+                p1=self.lx.get(),
+                p2=self.ly.get(),
+                p3=self.lz.get(),
+                speed=self.ls.get(),
+                desc=f"直线偏移 X={self.lx.get()},Y={self.ly.get()},Z={self.lz.get()} v={self.ls.get()}",
+            )
 
 
     def _build_tool_tab(self, parent: ttk.Frame):
@@ -558,9 +623,45 @@ class RobotGUI:
 
         self._control_widgets += [b1, b2, b3]
 
+    def _build_step_buffer_panel(self, parent: ttk.Widget) -> ttk.Frame:
+        """步骤缓冲区面板，始终显示在右侧，独立于程序标签"""
+        frm_buf = ttk.Labelframe(parent, text="步骤缓冲区", style="Card.TLabelframe", padding=10)
+        frm_buf.columnconfigure(0, weight=1)
+        frm_buf.rowconfigure(0, weight=1)
+
+        columns = ("step", "desc")
+        self.step_tree = ttk.Treeview(frm_buf, columns=columns, show="headings", height=8)
+        self.step_tree.heading("step", text="步骤")
+        self.step_tree.heading("desc", text="指令")
+        self.step_tree.column("step", width=60, anchor="center")
+        self.step_tree.column("desc", anchor="w")
+        self.step_tree.grid(row=0, column=0, sticky="nsew")
+
+        scrollbar = ttk.Scrollbar(frm_buf, orient="vertical", command=self.step_tree.yview)
+        self.step_tree.configure(yscrollcommand=scrollbar.set)
+        scrollbar.grid(row=0, column=1, sticky="ns")
+
+        buf_btns = ttk.Frame(frm_buf, style="App.TFrame")
+        buf_btns.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        buf_btns.columnconfigure((0, 1, 2, 3), weight=1)
+
+        self.record_btn = ttk.Button(buf_btns, text="开始录制步骤", command=self._toggle_record)
+        btn_delete = ttk.Button(buf_btns, text="删除步骤", command=self._delete_step)
+        btn_insert = ttk.Button(buf_btns, text="在前插入空步骤", command=self._insert_step_before)
+        btn_clear = ttk.Button(buf_btns, text="清空本地显示", command=self._clear_local_steps)
+
+        self.record_btn.grid(row=0, column=0, sticky="ew", padx=4)
+        btn_delete.grid(row=0, column=1, sticky="ew", padx=4)
+        btn_insert.grid(row=0, column=2, sticky="ew", padx=4)
+        btn_clear.grid(row=0, column=3, sticky="ew", padx=4)
+
+        self._control_widgets += [self.record_btn, btn_delete, btn_insert, btn_clear]
+        return frm_buf
+
     def _build_program_tab(self, parent: ttk.Frame):
         parent.columnconfigure(0, weight=1)
 
+        # 配方管理
         frm_top = ttk.Labelframe(parent, text="配方管理", style="Card.TLabelframe", padding=10)
         frm_top.grid(row=0, column=0, sticky="ew")
         frm_top.columnconfigure((1, 2, 3), weight=1)
@@ -626,6 +727,96 @@ class RobotGUI:
             return
         self._append_log(f"发送：{cmd}")
         self._io_q.put(("send", cmd))
+
+    # ===== 步骤缓冲区：本地镜像与写入 =====
+
+    def _toggle_record(self):
+        if not self._require_connected():
+            return
+        self.recording_steps = not self.recording_steps
+        if self.recording_steps:
+            self.record_btn.configure(text="停止录制步骤")
+            self._append_log("开始录制步骤：之后的运动指令会同时写入步骤缓冲区(SetStep)。")
+        else:
+            self.record_btn.configure(text="开始录制步骤")
+            self._append_log("停止录制步骤：之后的运动指令仅发送本身，不再写入步骤缓冲区。")
+
+    def _record_step(self, type_code: int, p1: str, p2: str, p3: str, speed: str, desc: str):
+        # 这里只在 recording_steps 为真时由调用方触发
+        try:
+            idx = len(self.step_records) + 1
+            execute_flag = 1  # 保存并执行
+            insert_flag = 0   # 顺序追加
+            delay = 0
+            io_pin = 0
+            io_state = 0
+            cmd = f"SetStep_{execute_flag},{insert_flag},{idx},{type_code},{p1},{p2},{p3},{speed},{delay},{io_pin},{io_state},"
+        except Exception as e:
+            self._append_log(f"构建步骤指令失败：{e}")
+            return
+
+        self.step_records.append({"index": idx, "type": type_code, "desc": desc, "cmd": cmd})
+        self._refresh_step_tree()
+        self._append_log(f"发送：{cmd}  (步骤 {idx})")
+        self._io_q.put(("send", cmd))
+
+    def _refresh_step_tree(self):
+        for item in self.step_tree.get_children():
+            self.step_tree.delete(item)
+        for step in self.step_records:
+            self.step_tree.insert("", "end", iid=str(step["index"]), values=(step["index"], step["desc"]))
+
+    def _selected_step_index(self) -> int | None:
+        sel = self.step_tree.selection()
+        if not sel:
+            messagebox.showinfo("提示", "请先在步骤列表中选中一条记录。")
+            return None
+        try:
+            return int(sel[0])
+        except ValueError:
+            return None
+
+    def _delete_step(self):
+        if not self._require_connected():
+            return
+        idx = self._selected_step_index()
+        if idx is None:
+            return
+        # 发送下位机删除指令
+        cmd = f"Delete_{idx},"
+        self._append_log(f"发送：{cmd}  (删除步骤 {idx})")
+        self._io_q.put(("send", cmd))
+        # 本地镜像删除并重排索引
+        self.step_records = [s for s in self.step_records if s["index"] != idx]
+        for i, s in enumerate(self.step_records, start=1):
+            s["index"] = i
+        self._refresh_step_tree()
+
+    def _insert_step_before(self):
+        if not self._require_connected():
+            return
+        idx = self._selected_step_index()
+        if idx is None:
+            return
+        cmd = f"Insert_{idx},"
+        self._append_log(f"发送：{cmd}  (在步骤 {idx} 前插入空步骤)")
+        self._io_q.put(("send", cmd))
+        # 本地镜像：插入一条占位记录
+        placeholder = {"index": idx, "type": 0, "desc": "【空步骤，待覆盖】", "cmd": ""}
+        new_records = []
+        for s in self.step_records:
+            if s["index"] == idx:
+                new_records.append(placeholder)
+            new_records.append(s)
+        self.step_records = new_records
+        for i, s in enumerate(self.step_records, start=1):
+            s["index"] = i
+        self._refresh_step_tree()
+
+    def _clear_local_steps(self):
+        # 仅清空 GUI 显示，不向下位机发送清除指令
+        self.step_records = []
+        self._refresh_step_tree()
 
     # ===== 程序配方相关指令 =====
     def _get_recipe(self, var: tk.StringVar) -> str:
