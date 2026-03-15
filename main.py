@@ -33,8 +33,8 @@ class RobotArm:
     def send(self, cmd):
         if not (self.ser and self.ser.is_open):
             raise RuntimeError("串口未连接")
-            self.ser.write((cmd + "\n").encode())
-            print("发送:", cmd)
+        self.ser.write((cmd + "\n").encode())
+        print("发送:", cmd)
 
     def joint(self,a1,a2,a3,s):
         self.send(f"JointAngle_{a1},{a2},{a3},{s},")
