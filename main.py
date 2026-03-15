@@ -84,6 +84,15 @@ class RobotGUI:
         # 步骤缓冲区（本地镜像）
         self.recording_steps = False
         self.step_records = []  # 每个元素：{"index": int, "type": int, "desc": str, "cmd": str}
+        
+        # 步骤参数设置 - 用于 SetStep 指令的默认参数
+        self.step_delay = tk.StringVar(value="0")  # 延时 ms
+        self.step_io_pin = tk.StringVar(value="0")  # IO 引脚
+        self.step_io_state = tk.StringVar(value="0")  # IO 状态
+        
+        # 插入模式标志
+        self.insert_mode = False  # 是否处于插入模式
+        self.insert_position = None  # 插入位置（选中的步骤索引）
 
         self._io_q: queue.Queue = queue.Queue()
         self._ui_q: queue.Queue = queue.Queue()
@@ -591,21 +600,43 @@ class RobotGUI:
     def _build_tool_tab(self, parent: ttk.Frame):
         frame = ttk.Labelframe(parent, text="末端执行器", style="Card.TLabelframe", padding=10)
         frame.grid(row=0, column=0, sticky="ew")
-        frame.columnconfigure((0, 1), weight=1)
+        frame.columnconfigure((0, 1, 2), weight=1)
 
         # 第一行：吸嘴控制
-        b1 = ttk.Button(frame, text="吸嘴 ON", command=lambda: self._send_simple(f"Suction_{1},"))
-        b2 = ttk.Button(frame, text="吸嘴 OFF", command=lambda: self._send_simple(f"Suction_{0},"))
-        b1.grid(row=0, column=0, sticky="ew", padx=5, pady=6)
-        b2.grid(row=0, column=1, sticky="ew", padx=5, pady=6)
+        ttk.Label(frame, text="吸嘴:").grid(row=0, column=0, sticky="w", padx=5, pady=6)
+        self.suction_var = tk.StringVar(value="0")
+        self.suction_combo = ttk.Combobox(frame, textvariable=self.suction_var, width=8, state="readonly", values=("0", "1"))
+        self.suction_combo.grid(row=0, column=1, sticky="w", pady=6)
+        b1 = ttk.Button(frame, text="执行", command=self._do_suction)
+        b1.grid(row=0, column=2, sticky="ew", padx=5, pady=6)
 
         # 第二行：抓手控制
-        b3 = ttk.Button(frame, text="抓手 ON", command=lambda: self._send_simple(f"Grasp_{1},"))
-        b4 = ttk.Button(frame, text="抓手 OFF", command=lambda: self._send_simple(f"Grasp_{0},"))
-        b3.grid(row=1, column=0, sticky="ew", padx=5, pady=6)
-        b4.grid(row=1, column=1, sticky="ew", padx=5, pady=6)
+        ttk.Label(frame, text="抓手:").grid(row=1, column=0, sticky="w", padx=5, pady=6)
+        self.grasp_var = tk.StringVar(value="0")
+        self.grasp_combo = ttk.Combobox(frame, textvariable=self.grasp_var, width=8, state="readonly", values=("0", "1"))
+        self.grasp_combo.grid(row=1, column=1, sticky="w", pady=6)
+        b3 = ttk.Button(frame, text="执行", command=self._do_grasp)
+        b3.grid(row=1, column=2, sticky="ew", padx=5, pady=6)
 
-        self._control_widgets += [b1, b2, b3, b4]
+        self._control_widgets += [b1, b3]
+
+    def _do_suction(self):
+        """执行吸嘴控制"""
+        if not self._require_connected():
+            return
+        state = self.suction_var.get()
+        cmd = f"Suction_{state},"
+        self._append_log(f"发送：{cmd}")
+        self._io_q.put(("send", cmd))
+
+    def _do_grasp(self):
+        """执行抓手控制"""
+        if not self._require_connected():
+            return
+        state = self.grasp_var.get()
+        cmd = f"Grasp_{state},"
+        self._append_log(f"发送：{cmd}")
+        self._io_q.put(("send", cmd))
 
 
     def _build_system_tab(self, parent: ttk.Frame):
@@ -646,16 +677,39 @@ class RobotGUI:
         buf_btns.columnconfigure((0, 1, 2, 3), weight=1)
 
         self.record_btn = ttk.Button(buf_btns, text="开始录制步骤", command=self._toggle_record)
+        btn_insert_empty = ttk.Button(buf_btns, text="插入空步骤", command=self._insert_empty_step)
         btn_delete = ttk.Button(buf_btns, text="删除步骤", command=self._delete_step)
-        btn_insert = ttk.Button(buf_btns, text="在前插入空步骤", command=self._insert_step_before)
         btn_clear = ttk.Button(buf_btns, text="清空本地显示", command=self._clear_local_steps)
 
         self.record_btn.grid(row=0, column=0, sticky="ew", padx=4)
-        btn_delete.grid(row=0, column=1, sticky="ew", padx=4)
-        btn_insert.grid(row=0, column=2, sticky="ew", padx=4)
+        btn_insert_empty.grid(row=0, column=1, sticky="ew", padx=4)
+        btn_delete.grid(row=0, column=2, sticky="ew", padx=4)
         btn_clear.grid(row=0, column=3, sticky="ew", padx=4)
 
-        self._control_widgets += [self.record_btn, btn_delete, btn_insert, btn_clear]
+        # 步骤参数设置区域（用于 SetStep 指令的默认参数）
+        frm_params = ttk.Frame(frm_buf, style="App.TFrame")
+        frm_params.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(8, 0))
+        frm_params.columnconfigure((0, 2, 4), weight=0)
+        frm_params.columnconfigure((1, 3, 5), weight=1)
+        
+        ttk.Label(frm_params, text="默认延时 (ms):", style="Hint.TLabel").grid(row=0, column=0, sticky="w", padx=(0, 4))
+        self.step_delay_entry = ttk.Entry(frm_params, textvariable=self.step_delay, width=8)
+        self.step_delay_entry.grid(row=0, column=1, sticky="w", pady=4)
+        
+        ttk.Label(frm_params, text="IO 引脚:", style="Hint.TLabel").grid(row=0, column=2, sticky="w", padx=(8, 4))
+        self.step_io_pin_entry = ttk.Entry(frm_params, textvariable=self.step_io_pin, width=8)
+        self.step_io_pin_entry.grid(row=0, column=3, sticky="w", pady=4)
+        
+        ttk.Label(frm_params, text="IO 状态:", style="Hint.TLabel").grid(row=0, column=4, sticky="w", padx=(8, 4))
+        self.step_io_state_entry = ttk.Entry(frm_params, textvariable=self.step_io_state, width=8)
+        self.step_io_state_entry.grid(row=0, column=5, sticky="w", pady=4)
+        
+        # 提示信息
+        hint_label = ttk.Label(frm_params, text="💡 选中步骤后录制将插入到其后；选中空步骤则替换", style="Hint.TLabel")
+        hint_label.grid(row=3, column=0, columnspan=6, sticky="w", pady=(4, 0))
+
+        self._control_widgets += [self.record_btn, btn_insert_empty, btn_delete, btn_clear, 
+                                  self.step_delay_entry, self.step_io_pin_entry, self.step_io_state_entry]
         return frm_buf
 
     def _build_program_tab(self, parent: ttk.Frame):
@@ -736,20 +790,100 @@ class RobotGUI:
         self.recording_steps = not self.recording_steps
         if self.recording_steps:
             self.record_btn.configure(text="停止录制步骤")
-            self._append_log("开始录制步骤：之后的运动指令会同时写入步骤缓冲区(SetStep)。")
+            self._append_log("开始录制步骤：之后的运动指令会同时写入步骤缓冲区 (SetStep)。")
+            self._append_log("提示：选中某个步骤后，新指令将插入到该步骤之后；若选中空指令则直接替换。")
         else:
             self.record_btn.configure(text="开始录制步骤")
             self._append_log("停止录制步骤：之后的运动指令仅发送本身，不再写入步骤缓冲区。")
+            # 退出插入模式
+            self.insert_mode = False
+            self.insert_position = None
 
-    def _record_step(self, type_code: int, p1: str, p2: str, p3: str, speed: str, desc: str):
-        # 这里只在 recording_steps 为真时由调用方触发
+    def _record_step(self, type_code: int, p1: str, p2: str, p3: str, speed: str, desc: str, delay: str = None, io_pin: str = None, io_state: str = None):
+        """录制步骤到缓冲区
+        
+        Args:
+            type_code: 指令类型 (1-关节坐标 2-关节偏移 3-世界坐标 4-世界偏移 5-直线 6-直线偏移 7-DI 8-DO 9-外设)
+            p1, p2, p3: 主要参数 (角度/坐标等)
+            speed: 速度
+            desc: 描述文本
+            delay: 延时 (ms)，默认从 UI 获取
+            io_pin: IO 引脚，默认从 UI 获取
+            io_state: IO 状态，默认从 UI 获取
+        """
+        if not self.recording_steps:
+            return
         try:
-            idx = len(self.step_records) + 1
             execute_flag = 1  # 保存并执行
-            insert_flag = 0   # 顺序追加
-            delay = 0
-            io_pin = 0
-            io_state = 0
+            
+            # 使用 UI 设置的默认值，除非调用时提供了特定值
+            if delay is None:
+                delay = self.step_delay.get().strip() or "0"
+            if io_pin is None:
+                io_pin = self.step_io_pin.get().strip() or "0"
+            if io_state is None:
+                io_state = self.step_io_state.get().strip() or "0"
+            
+            # 检查是否选中了某个步骤（不弹窗提示）
+            selected_idx = self._selected_step_index(show_hint=False)
+            
+            if selected_idx is not None:
+                # 检查选中的是否是空指令（type=0 或 desc 包含"空步骤"）
+                selected_step = None
+                for s in self.step_records:
+                    if s["index"] == selected_idx:
+                        selected_step = s
+                        break
+                
+                if selected_step and (selected_step["type"] == 0 or "空步骤" in selected_step["desc"]):
+                    # 替换空指令模式
+                    insert_flag = 0  # 覆盖
+                    idx = selected_idx  # 使用当前选中的索引
+                    self._append_log(f"替换空步骤 {idx}")
+                    
+                    # 构建新指令
+                    cmd = f"SetStep_{execute_flag},{insert_flag},{idx},{type_code},{p1},{p2},{p3},{speed},{delay},{io_pin},{io_state},"
+                    
+                    # 更新本地镜像
+                    new_step = {"index": idx, "type": type_code, "desc": desc, "cmd": cmd}
+                    self.step_records[selected_idx - 1] = new_step
+                    
+                    # 发送指令到下位机（需要先删除再插入，或者直接覆盖）
+                    # 这里采用先删除后插入的方式
+                    del_cmd = f"Delete_{idx},"
+                    self._io_q.put(("send", del_cmd))
+                    time.sleep(0.05)  # 短暂延时确保下位机处理完成
+                    self._io_q.put(("send", cmd))
+                    
+                    self._refresh_step_tree()
+                    self._append_log(f"发送：{cmd}  (替换步骤 {idx})")
+                    return
+                else:
+                    # 插入模式：在选中步骤之后插入
+                    insert_flag = 1  # 启用插入功能
+                    idx = selected_idx + 1  # 在选中位置之后插入
+                    
+                    # 构建指令
+                    cmd = f"SetStep_{execute_flag},{insert_flag},{idx},{type_code},{p1},{p2},{p3},{speed},{delay},{io_pin},{io_state},"
+                    
+                    # 更新本地镜像：在选中位置之后插入
+                    new_step = {"index": idx, "type": type_code, "desc": desc, "cmd": cmd}
+                    self.step_records.insert(selected_idx, new_step)
+                    
+                    # 重新编号所有步骤
+                    for i, s in enumerate(self.step_records, start=1):
+                        s["index"] = i
+                    
+                    self._refresh_step_tree()
+                    self._append_log(f"发送：{cmd}  (在步骤 {selected_idx} 后插入)")
+                    self._io_q.put(("send", cmd))
+                    return
+            
+            # 默认模式：追加到末尾
+            idx = len(self.step_records) + 1
+            insert_flag = 0  # 顺序追加
+            
+            # SetStep 指令格式：SetStep_执行判断，插入功能，步骤数，指令类型，P1,P2,P3，速度，延时，IO 引脚，IO 状态，
             cmd = f"SetStep_{execute_flag},{insert_flag},{idx},{type_code},{p1},{p2},{p3},{speed},{delay},{io_pin},{io_state},"
         except Exception as e:
             self._append_log(f"构建步骤指令失败：{e}")
@@ -766,10 +900,16 @@ class RobotGUI:
         for step in self.step_records:
             self.step_tree.insert("", "end", iid=str(step["index"]), values=(step["index"], step["desc"]))
 
-    def _selected_step_index(self) -> int | None:
+    def _selected_step_index(self, show_hint: bool = True) -> int | None:
+        """获取选中的步骤索引
+        
+        Args:
+            show_hint: 是否显示提示弹窗（未选中时）
+        """
         sel = self.step_tree.selection()
         if not sel:
-            messagebox.showinfo("提示", "请先在步骤列表中选中一条记录。")
+            if show_hint:
+                messagebox.showinfo("提示", "请先在步骤列表中选中一条记录。")
             return None
         try:
             return int(sel[0])
@@ -792,26 +932,37 @@ class RobotGUI:
             s["index"] = i
         self._refresh_step_tree()
 
-    def _insert_step_before(self):
+    def _insert_empty_step(self):
+        """在选中的步骤之前插入一个空步骤（可用于在第一项前插入）"""
         if not self._require_connected():
             return
-        idx = self._selected_step_index()
+        
+        # 不传 show_hint 参数，默认未选中时不弹窗
+        idx = self._selected_step_index(show_hint=False)
+        
         if idx is None:
-            return
+            # 未选中任何项，在末尾插入空步骤
+            idx = len(self.step_records) + 1
+            insert_flag = 0  # 追加
+        else:
+            # 选中了某项，在其之前插入
+            insert_flag = 1  # 启用插入功能
+        
+        # 发送下位机插入指令
         cmd = f"Insert_{idx},"
         self._append_log(f"发送：{cmd}  (在步骤 {idx} 前插入空步骤)")
         self._io_q.put(("send", cmd))
+        
         # 本地镜像：插入一条占位记录
         placeholder = {"index": idx, "type": 0, "desc": "【空步骤，待覆盖】", "cmd": ""}
-        new_records = []
-        for s in self.step_records:
-            if s["index"] == idx:
-                new_records.append(placeholder)
-            new_records.append(s)
-        self.step_records = new_records
+        self.step_records.insert(idx - 1, placeholder)
+        
+        # 重新编号所有步骤
         for i, s in enumerate(self.step_records, start=1):
             s["index"] = i
+        
         self._refresh_step_tree()
+        self._append_log(f"已插入空步骤 {idx}")
 
     def _clear_local_steps(self):
         # 仅清空 GUI 显示，不向下位机发送清除指令
